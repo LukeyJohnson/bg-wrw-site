@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 import re
 import shutil
 import tarfile
+from urllib.parse import urlsplit
 
 MAX_SITE_BYTES = 1_000_000_000
 SHA = re.compile(r'[a-f0-9]{64}')
@@ -87,7 +88,7 @@ def create(site, output, release_id, prefix='', mode='preview'):
     rebase(site, public, prefix)
     # Host-neutral local release headers are not interpreted by GitHub Pages.
     (public / '_headers').unlink(missing_ok=True)
-    marker = {'schema': 1, 'release_id': release_id, 'path_prefix': prefix, 'mode': mode}
+    marker = {'schema': 1, 'release_id': release_id, 'path_prefix': prefix, 'mode': mode, 'adapter_sha256': file_sha(Path(__file__))}
     (public / '__wrw_release.json').write_bytes(stable(marker) + b'\n')
     files, posts = [], []
     for file in sorted(public.rglob('*')):
@@ -101,7 +102,8 @@ def create(site, output, release_id, prefix='', mode='preview'):
                 if len(parsed.ids) != 1: raise ValueError('Multiple article identities')
                 path = '/' + name
                 if path.endswith('index.html'): path = path[:-10]
-                posts.append({'path': path, 'id': parsed.ids[0]})
+                canonical_path = urlsplit(parsed.canonical).path if parsed.canonical else path
+                posts.append({'path': canonical_path, 'file': name, 'id': parsed.ids[0]})
     if sum(item['bytes'] for item in files) >= MAX_SITE_BYTES: raise ValueError('GitHub Pages site exceeds 1 GB')
     manifest = {**marker, 'files': files, 'posts': posts}
     manifest['package_id'] = sha(stable(manifest))
@@ -142,7 +144,7 @@ def verify(archive, output, release_id, expected_sha):
             if sha(data) != record['sha256']: raise ValueError('Public file checksum mismatch')
             destination = output / safe_name(record['path']); destination.parent.mkdir(parents=True, exist_ok=True); destination.write_bytes(data)
         for post in manifest['posts']:
-            path = post['path'].lstrip('/') + ('index.html' if post['path'].endswith('/') else '')
+            path = post.get('file') or post['path'].lstrip('/') + ('index.html' if post['path'].endswith('/') else '')
             parsed = PageInfo(); parsed.feed((output / safe_name(path)).read_text())
             if parsed.ids != [post['id']]: raise ValueError('Uploaded article identity mismatch')
         marker = json.loads((output / '__wrw_release.json').read_text())

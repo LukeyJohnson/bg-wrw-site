@@ -32,7 +32,8 @@ def verify_live(manifest, base_url, full=False, workers=8, wait=120):
     while True:
         try:
             body,_=request(urljoin(base_url,'__wrw_release.json'))
-            if json.loads(body)['release_id']!=manifest['release_id']: raise ValueError('Old/unexpected release marker')
+            marker=json.loads(body)
+            if any(marker.get(key)!=manifest[key] for key in ('release_id','path_prefix','mode','adapter_sha256') if key in manifest): raise ValueError('Old/unexpected release marker')
             break
         except Exception:
             if time.monotonic()>=deadline:raise
