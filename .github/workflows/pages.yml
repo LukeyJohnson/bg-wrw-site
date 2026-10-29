@@ -1,0 +1,82 @@
+name: Publish WRW
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Immutable public release asset tag
+        required: true
+        type: string
+      release_id:
+        description: Verified WRW release SHA-256
+        required: true
+        type: string
+      archive_sha256:
+        description: Expected archive SHA-256
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wrw-pages
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - run: python -m unittest discover -s tests -p 'test_pages_bundle.py' -v
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch'
+    needs: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Download and verify exact public release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_ID: ${{ inputs.release_id }}
+          ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+        run: |
+          python -c 'import os,re; assert re.fullmatch(r"wrw-[a-f0-9]{64}",os.environ["RELEASE_TAG"]); assert re.fullmatch(r"[a-f0-9]{64}",os.environ["RELEASE_ID"]); assert re.fullmatch(r"[a-f0-9]{64}",os.environ["ARCHIVE_SHA256"])'
+          gh release download "$RELEASE_TAG" --pattern wrw-site.tar.gz --dir incoming
+          python scripts/wrw_pages_bundle.py verify incoming/wrw-site.tar.gz --output public-site --release-id "$RELEASE_ID" --sha256 "$ARCHIVE_SHA256"
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
+        with:
+          path: public-site
+          retention-days: 1
+      - name: Deploy exact verified artifact
+        id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
+      - name: Check deployed marker, articles, assets and 404
+        env:
+          PUBLIC_URL: ${{ steps.deployment.outputs.page_url }}
+        run: python scripts/wrw_verify_live.py --archive incoming/wrw-site.tar.gz --url "$PUBLIC_URL"
