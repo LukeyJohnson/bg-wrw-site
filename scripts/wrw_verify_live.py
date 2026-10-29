@@ -4,21 +4,32 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import argparse
 import hashlib
 import json
+import ssl
 from pathlib import Path
 import tarfile
 import time
 from urllib.parse import urljoin, urlsplit
 from urllib.request import Request, urlopen
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 from wrw_pages_bundle import PageInfo
 
 
+TLS_CONTEXT = ssl.create_default_context()
+
+
 def request(url, method='GET', limit=10_000_000):
-    with urlopen(Request(url, method=method, headers={'User-Agent':'WRW-publication-verification/1.0'}), timeout=30) as response:
-        body=response.read(limit+1) if method=='GET' else b''
-        if len(body)>limit: raise ValueError('Unexpectedly large public response')
-        if response.status!=200: raise ValueError('HTTP '+str(response.status))
-        return body,dict(response.headers)
+    for attempt in range(3):
+        try:
+            with urlopen(Request(url, method=method, headers={'User-Agent':'WRW-publication-verification/1.0'}), timeout=30, context=TLS_CONTEXT) as response:
+                body=response.read(limit+1) if method=='GET' else b''
+                if len(body)>limit: raise ValueError('Unexpectedly large public response')
+                if response.status!=200: raise ValueError('HTTP '+str(response.status))
+                return body,dict(response.headers)
+        except HTTPError as exc:
+            if exc.code not in (408,429,500,502,503,504) or attempt==2: raise
+        except (URLError, TimeoutError, ConnectionError):
+            if attempt==2: raise
+        time.sleep(0.5 * (attempt+1))
 
 
 def verify_live(manifest, base_url, full=False, workers=8, wait=120):
@@ -46,9 +57,11 @@ def verify_live(manifest, base_url, full=False, workers=8, wait=120):
         return post['path']
     failures=[]
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for future in as_completed([pool.submit(post_check,post) for post in posts]):
+        pending={pool.submit(post_check,post):post['path'] for post in posts}
+        for count,future in enumerate(as_completed(pending),1):
             try:future.result()
-            except Exception as exc:failures.append(str(exc))
+            except Exception as exc:failures.append(pending[future]+': '+str(exc))
+            if full and count%500==0:print('Public articles checked',count,'/',len(posts),flush=True)
     assets=[row for row in manifest['files'] if row['path'].startswith(('media/','assets/','static/'))]
     selected=assets if full else assets[:10]
     def asset_check(row):
@@ -58,9 +71,11 @@ def verify_live(manifest, base_url, full=False, workers=8, wait=120):
         body,headers=request(base_url+row['path'],method=method)
         if method=='GET' and hashlib.sha256(body).hexdigest()!=row['sha256']:raise ValueError('Wrong public asset: '+row['path'])
     with ThreadPoolExecutor(max_workers=workers) as pool:
-        for future in as_completed([pool.submit(asset_check,row) for row in selected]):
+        pending={pool.submit(asset_check,row):row['path'] for row in selected}
+        for count,future in enumerate(as_completed(pending),1):
             try:future.result()
-            except Exception as exc:failures.append(str(exc))
+            except Exception as exc:failures.append(pending[future]+': '+str(exc))
+            if full and count%500==0:print('Public assets checked',count,'/',len(selected),flush=True)
     for path in ('','search/','archive/'):
         try:request(base_url+path)
         except Exception as exc:failures.append(path+': '+str(exc))
