@@ -83,4 +83,45 @@ class LiveTests(unittest.TestCase):
             self.assertEqual(opened.call_count,1)
 
 
+class ConnectionTests(unittest.TestCase):
+    def setUp(self):
+        live.CONNECTIONS.values={}
+        self.addCleanup(lambda: setattr(live.CONNECTIONS,'values',{}))
+
+    def response(self,status=200):
+        result=MagicMock();result.status=status;result.reason='response';result.headers={};result.length=0;result.isclosed.return_value=True
+        return result
+
+    def test_completed_requests_reuse_one_certificate_checked_connection(self):
+        connection=MagicMock();connection.getresponse.return_value=self.response()
+        with patch.object(live.http.client,'HTTPSConnection',return_value=connection) as factory:
+            for _ in range(2):
+                with live.urlopen(live.Request('https://wrw.blackgrid.com.au/'),context=live.TLS_CONTEXT):pass
+            self.assertEqual(factory.call_count,1)
+            self.assertIs(factory.call_args.kwargs['context'],live.TLS_CONTEXT)
+            self.assertEqual(connection.request.call_count,2)
+
+    def test_incomplete_response_discards_connection(self):
+        connection=MagicMock();response=self.response();response.length=20;response.isclosed.return_value=False;connection.getresponse.return_value=response
+        with patch.object(live.http.client,'HTTPSConnection',return_value=connection):
+            with live.urlopen(live.Request('https://wrw.blackgrid.com.au/')):pass
+            connection.close.assert_called_once();self.assertFalse(live.CONNECTIONS.values)
+
+    def test_404_keeps_its_status_and_is_not_retried(self):
+        connection=MagicMock();connection.getresponse.return_value=self.response(404)
+        with patch.object(live.http.client,'HTTPSConnection',return_value=connection),patch.object(live.time,'sleep') as sleep:
+            with self.assertRaises(HTTPError) as caught:live.request('https://wrw.blackgrid.com.au/missing/')
+            self.assertEqual(caught.exception.code,404);sleep.assert_not_called();connection.close.assert_called_once()
+
+    def test_https_redirect_preserves_host_header_and_refuses_downgrade(self):
+        first=MagicMock();redirect=self.response(301);redirect.getheader.return_value='/next/';first.getresponse.return_value=redirect
+        second=MagicMock();second.getresponse.return_value=self.response()
+        with patch.object(live.http.client,'HTTPSConnection',side_effect=[first,second]):
+            with live.urlopen(live.Request('https://wrw.blackgrid.com.au/')):pass
+            self.assertEqual(second.request.call_args.args[1],'/next/')
+        live.CONNECTIONS.values={};redirect.getheader.return_value='http://wrw.blackgrid.com.au/'
+        with patch.object(live.http.client,'HTTPSConnection',return_value=first):
+            with self.assertRaisesRegex(ValueError,'URL'):live.urlopen(live.Request('https://wrw.blackgrid.com.au/'))
+
+
 if __name__=='__main__':unittest.main()

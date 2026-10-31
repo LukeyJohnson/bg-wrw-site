@@ -5,17 +5,71 @@ import argparse
 import hashlib
 import json
 import ssl
+import http.client
+import threading
 from html.parser import HTMLParser
 from pathlib import Path
 import tarfile
 import time
 from urllib.parse import urljoin, urlsplit, unquote
-from urllib.request import Request, urlopen
+from urllib.request import Request
 from urllib.error import HTTPError, URLError
 from wrw_pages_bundle import PageInfo
 
 
 TLS_CONTEXT = ssl.create_default_context()
+
+
+CONNECTIONS = threading.local()
+
+
+def discard_connection(key):
+    connection=getattr(CONNECTIONS,'values',{}).pop(key,None)
+    if connection: connection.close()
+
+
+class PooledResponse:
+    def __init__(self, response, key): self.response=response; self.key=key
+    def __enter__(self): return self.response
+    def __exit__(self, kind, value, traceback):
+        complete=self.response.isclosed() or self.response.length==0
+        self.response.close()
+        if kind or not complete: discard_connection(self.key)
+
+
+def urlopen(request, timeout=30, context=TLS_CONTEXT):
+    # urllib closes each connection. The large WRW check instead keeps one TLS
+    # connection per worker/origin, preserving certificate and hostname checks.
+    url=request.full_url
+    for _ in range(6):
+        parsed=urlsplit(url)
+        if parsed.scheme!='https' or parsed.username or not parsed.hostname:
+            raise ValueError('Unexpected verification request URL')
+        key=(parsed.hostname,parsed.port or 443)
+        if not hasattr(CONNECTIONS,'values'): CONNECTIONS.values={}
+        connection=CONNECTIONS.values.get(key)
+        if connection is None:
+            connection=http.client.HTTPSConnection(key[0],key[1],timeout=timeout,context=context)
+            CONNECTIONS.values[key]=connection
+        path=(parsed.path or '/')+('?' + parsed.query if parsed.query else '')
+        try:
+            connection.request(request.get_method(),path,headers=dict(request.header_items()))
+            response=connection.getresponse()
+        except (OSError,http.client.HTTPException) as exc:
+            discard_connection(key)
+            raise URLError(exc) from exc
+        if response.status in (301,302,303,307,308):
+            location=response.getheader('Location')
+            response.close(); discard_connection(key)
+            if not location: raise ValueError('Redirect has no Location')
+            url=urljoin(url,location)
+            continue
+        if response.status>=400:
+            status,reason,headers=response.status,response.reason,response.headers
+            response.close(); discard_connection(key)
+            raise HTTPError(url,status,reason,headers,None)
+        return PooledResponse(response,key)
+    raise ValueError('Too many verification redirects')
 
 
 def request(url, method='GET', limit=10_000_000):
