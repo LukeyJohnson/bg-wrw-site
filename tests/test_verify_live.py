@@ -18,8 +18,10 @@ class LiveTests(unittest.TestCase):
         self.manifest={'release_id':'a'*64,'path_prefix':'/bg-wrw-site','mode':'preview',
             'posts':[{'path':'/original-slug/','id':123}],
             'files':[{'path':'assets/test.css','sha256':hashlib.sha256(self.asset).hexdigest()}]}
-        self.article=b'<link rel="canonical" href="https://wrw.blackgrid.com.au/original-slug/"><article data-post-id="123"></article>'
+        self.style=b'<link rel="stylesheet" href="/bg-wrw-site/assets/test.css">'
+        self.article=self.style+b'<link rel="canonical" href="https://wrw.blackgrid.com.au/original-slug/"><article data-post-id="123"></article>'
         self.unknown_200=False
+        self.css_type='text/css'
 
     def request(self,url,method='GET'):
         if url.endswith('__wrw_release.json'):return json.dumps(self.manifest).encode(),{}
@@ -27,8 +29,8 @@ class LiveTests(unittest.TestCase):
             if self.unknown_200:return b'wrong fallback',{}
             raise HTTPError(url,404,'Missing',{},None)
         if url.endswith('/original-slug/'):return self.article,{}
-        if url.endswith('test.css'):return self.asset,{}
-        return b'page',{}
+        if url.endswith('test.css'):return self.asset,{'Content-Type':self.css_type}
+        return self.style+b'page',{}
 
     def check(self):
         with patch.object(live,'request',self.request):return live.verify_live(self.manifest,self.base,full=True,wait=0)
@@ -47,6 +49,26 @@ class LiveTests(unittest.TestCase):
     def test_wrong_asset_bytes_and_soft_404_fail(self):
         self.asset=b'changed';self.unknown_200=True
         result=self.check();self.assertFalse(result['ok']);self.assertEqual(len(result['failures']),2)
+
+    def test_custom_domain_rejects_leftover_project_stylesheet_path(self):
+        self.base='https://wrw.blackgrid.com.au/'
+        self.manifest['path_prefix']=''
+        result=self.check()
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('stylesheet/script missing' in issue for issue in result['failures']))
+
+    def test_custom_domain_accepts_root_stylesheet_path(self):
+        self.base='https://wrw.blackgrid.com.au/'
+        self.manifest['path_prefix']=''
+        self.style=self.style.replace(b'/bg-wrw-site/',b'/')
+        self.article=self.article.replace(b'/bg-wrw-site/',b'/')
+        self.assertTrue(self.check()['ok'])
+
+    def test_stylesheet_returning_html_is_a_rendering_failure(self):
+        self.css_type='text/html'
+        result=self.check()
+        self.assertFalse(result['ok'])
+        self.assertTrue(any('not served as CSS' in issue for issue in result['failures']))
 
     def test_transient_503_retries_but_404_does_not(self):
         response=MagicMock();response.__enter__.return_value=response;response.status=200;response.read.return_value=b'ok';response.headers={}
