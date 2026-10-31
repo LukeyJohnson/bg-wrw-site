@@ -50,8 +50,11 @@ def page_resources(body, page_url, base_url, files):
     base=urlsplit(base_url); result=set()
     for value in info.styles+info.scripts:
         url=urlsplit(urljoin(page_url,value))
-        if url.scheme!='https' or url.netloc!=base.netloc:
-            raise ValueError('Unexpected stylesheet/script origin: '+value)
+        if url.scheme!='https':
+            raise ValueError('Insecure stylesheet/script URL: '+value)
+        # Optional HTTPS services such as future advertising are not files in
+        # our publication archive. Validate the first-party design resources.
+        if url.netloc!=base.netloc: continue
         if not url.path.startswith(base.path):
             raise ValueError('Stylesheet/script outside publication prefix: '+value)
         relative=unquote(url.path[len(base.path):])

@@ -70,6 +70,10 @@ class LiveTests(unittest.TestCase):
         self.assertFalse(result['ok'])
         self.assertTrue(any('not served as CSS' in issue for issue in result['failures']))
 
+    def test_optional_https_service_does_not_need_to_be_in_the_site_archive(self):
+        self.article+=b'<script src="https://ads.example.org/ad.js"></script>'
+        self.assertTrue(self.check()['ok'])
+
     def test_transient_503_retries_but_404_does_not(self):
         response=MagicMock();response.__enter__.return_value=response;response.status=200;response.read.return_value=b'ok';response.headers={}
         with patch.object(live,'urlopen',side_effect=[HTTPError(self.base,503,'temporary',{},None),response]) as opened,patch.object(live.time,'sleep'):
