@@ -67,6 +67,10 @@ def rebase(source, destination, prefix):
         if not value.startswith('/') or value.startswith('//'): return value
         return prefix + replacements.get(value, value)
     for file in sorted(destination.rglob('*.html')):
+        if file.parent == destination and re.fullmatch(r'google[a-f0-9]{16}\.html',file.name):
+            if file.read_text().strip() != 'google-site-verification: '+file.name:
+                raise ValueError('Invalid Google ownership verification resource')
+            continue
         doc = LH.document_fromstring(file.read_bytes())
         for node in doc.iter():
             for attribute in ('href', 'src', 'action', 'poster', 'data-index'):

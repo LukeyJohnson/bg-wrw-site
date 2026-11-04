@@ -76,5 +76,14 @@ class BundleTests(unittest.TestCase):
         index=doc.xpath('//script/@data-index')[0].removeprefix('/bg-wrw-site/')
         self.assertEqual(json.loads((out/index).read_text())[0]['path'],'/bg-wrw-site/article/')
 
+    def test_ownership_file_survives_public_packaging_byte_for_byte(self):
+        try:from lxml import html
+        except ImportError:self.skipTest('Local packaging uses lxml; public archive verifier is stdlib-only')
+        source=self.root/'verification-source';source.mkdir()
+        name='google8924dc097d3bc547.html';body=('google-site-verification: '+name+'\n').encode()
+        (source/name).write_bytes(body)
+        out=self.root/'verification-public';bundle.rebase(source,out,'')
+        self.assertEqual((out/name).read_bytes(),body)
+
 
 if __name__=='__main__':unittest.main()
