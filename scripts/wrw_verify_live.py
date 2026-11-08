@@ -11,6 +11,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 import tarfile
 import time
+import xml.etree.ElementTree as ET
 from urllib.parse import urljoin, urlsplit, unquote
 from urllib.request import Request
 from urllib.error import HTTPError, URLError
@@ -118,6 +119,38 @@ def page_resources(body, page_url, base_url, files):
     return result
 
 
+def verify_feeds(files, base_url, full=False, workers=8):
+    """Prove subscriber bytes on the public host, not just the release marker."""
+    if '__wrw_feed_manifest.json' not in files: return {'checked':0,'failures':[]}
+    def body(name):
+        value,headers=request(urljoin(base_url,name))
+        if hashlib.sha256(value).hexdigest()!=files[name]['sha256']:raise ValueError('Wrong public feed bytes: '+name)
+        return value,headers
+    contract=json.loads(body('__wrw_feed_manifest.json')[0])
+    if contract.get('schema')!=1:raise ValueError('Unknown public feed manifest')
+    selected=list(contract['endpoints']) if full else [p for p in ('/feed.xml','/atom.xml','/comments.xml','/comments-atom.xml') if p in contract['endpoints']]
+    def check(path):
+        name=path.lstrip('/')
+        if not path.startswith('/') or name not in files:raise ValueError('Unmanifested public feed: '+path)
+        value,headers=body(name);root=ET.fromstring(value)
+        expected='rss' if contract['endpoints'][path]['format']=='rss' else '{http://www.w3.org/2005/Atom}feed'
+        if root.tag!=expected:raise ValueError('Wrong public feed format: '+path)
+        kind=next((v.split(';')[0].strip().lower() for k,v in headers.items() if k.lower()=='content-type'),'')
+        if kind not in ('application/rss+xml','application/atom+xml','application/xml','text/xml'):raise ValueError('Public feed has non-XML content type: '+path)
+        if path=='/feed.xml' and contract.get('phase')!='held':
+            actual=[(x.findtext('guid'),x.findtext('link')) for x in root.findall('./channel/item')]
+            expected=[(x['guid'],x['url']) for x in contract['main_items']]
+            if actual!=expected:raise ValueError('Public subscriber identities differ from feed contract')
+    failures=[]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        pending={pool.submit(check,path):path for path in selected}
+        for count,future in enumerate(as_completed(pending),1):
+            try:future.result()
+            except Exception as exc:failures.append(pending[future]+': '+str(exc))
+            if full and count%1000==0:print('Public feeds checked',count,'/',len(selected),flush=True)
+    return {'checked':len(selected),'failures':failures,'phase':contract.get('phase','ready')}
+
+
 def verify_live(manifest, base_url, full=False, workers=8, wait=120):
     parsed=urlsplit(base_url)
     if parsed.scheme!='https' or parsed.hostname not in ('lukeyjohnson.github.io','wrw.blackgrid.com.au') or parsed.username:
@@ -175,6 +208,10 @@ def verify_live(manifest, base_url, full=False, workers=8, wait=120):
             try:future.result()
             except Exception as exc:failures.append(pending[future]+': '+str(exc))
             if full and count%500==0:print('Public assets checked',count,'/',len(selected),flush=True)
+    feed_report={'checked':0,'failures':[]}
+    try:
+        feed_report=verify_feeds(files,base_url,full,workers);failures.extend(feed_report['failures'])
+    except Exception as exc:failures.append('Subscriber feed check: '+str(exc))
     try:
         request(base_url+'__wrw_deliberately_missing_route_49b9fa/')
         failures.append('Unknown route returned HTTP 200')
@@ -183,7 +220,7 @@ def verify_live(manifest, base_url, full=False, workers=8, wait=120):
     except Exception as exc:failures.append('404 check: '+str(exc))
     result={'release_id':manifest['release_id'],'url':base_url,'full':full,'articles_checked':len(posts),'assets_checked':len(selected),
         'asset_method':'all assets HEAD; shared assets sampled by byte hash' if full else 'sampled assets GET and byte hash',
-        'referenced_stylesheets_scripts_checked':len(resources),'failures':failures,'ok':not failures}
+        'referenced_stylesheets_scripts_checked':len(resources),'feeds_checked':feed_report['checked'],'feed_phase':feed_report.get('phase'),'failures':failures,'ok':not failures}
     return result
 
 

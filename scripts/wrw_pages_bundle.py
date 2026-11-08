@@ -67,6 +67,10 @@ def rebase(source, destination, prefix):
         if not value.startswith('/') or value.startswith('//'): return value
         return prefix + replacements.get(value, value)
     for file in sorted(destination.rglob('*.html')):
+        if file.relative_to(destination).as_posix() == 'feed/index.html' and file.read_bytes().lstrip().startswith(b'<?xml'):
+            import xml.etree.ElementTree as ET
+            if ET.fromstring(file.read_bytes()).tag != 'rss': raise ValueError('Invalid compatibility RSS resource')
+            continue
         if file.parent == destination and re.fullmatch(r'google[a-f0-9]{16}\.html',file.name):
             if file.read_text().strip() != 'google-site-verification: '+file.name:
                 raise ValueError('Invalid Google ownership verification resource')

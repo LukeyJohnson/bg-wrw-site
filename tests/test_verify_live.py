@@ -83,6 +83,23 @@ class LiveTests(unittest.TestCase):
             self.assertEqual(opened.call_count,1)
 
 
+class FeedLiveTests(unittest.TestCase):
+    def test_public_feed_hash_format_and_identity_are_required(self):
+        rss=b'<rss><channel><item><guid>urn:wrw:post:3</guid><link>https://wrw.blackgrid.com.au/new/</link></item></channel></rss>'
+        contract={'schema':1,'endpoints':{'/feed.xml':{'format':'rss'}},'main_items':[{'guid':'urn:wrw:post:3','url':'https://wrw.blackgrid.com.au/new/'}]}
+        contents={'__wrw_feed_manifest.json':json.dumps(contract).encode(),'feed.xml':rss}
+        files={name:{'sha256':hashlib.sha256(value).hexdigest()} for name,value in contents.items()}
+        def request(url):return contents[url.rsplit('/',1)[-1]],{'Content-Type':'application/xml; charset=utf-8'}
+        with patch.object(live,'request',side_effect=request):
+            self.assertEqual(live.verify_feeds(files,'https://wrw.blackgrid.com.au/')['failures'],[])
+            contents['feed.xml']=rss.replace(b'post:3',b'post:4')
+            result=live.verify_feeds(files,'https://wrw.blackgrid.com.au/')
+            self.assertTrue(any('Wrong public feed bytes' in x for x in result['failures']))
+            files['feed.xml']['sha256']=hashlib.sha256(contents['feed.xml']).hexdigest()
+            result=live.verify_feeds(files,'https://wrw.blackgrid.com.au/')
+            self.assertTrue(any('identities differ' in x for x in result['failures']))
+
+
 class ConnectionTests(unittest.TestCase):
     def setUp(self):
         live.CONNECTIONS.values={}
