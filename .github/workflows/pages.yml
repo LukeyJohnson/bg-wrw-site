@@ -19,6 +19,12 @@ on:
         description: Expected archive SHA-256
         required: true
         type: string
+      transport:
+        description: Immutable transport format
+        required: false
+        default: archive
+        type: choice
+        options: [archive, layers]
 
 permissions:
   contents: read
@@ -66,23 +72,48 @@ jobs:
           RELEASE_TAG: ${{ inputs.release_tag }}
           RELEASE_ID: ${{ inputs.release_id }}
           ARCHIVE_SHA256: ${{ inputs.archive_sha256 }}
+          TRANSPORT: ${{ inputs.transport || 'archive' }}
         run: |
           python -c 'import os,re; assert re.fullmatch(r"wrw-[a-f0-9]{64}",os.environ["RELEASE_TAG"]); assert re.fullmatch(r"[a-f0-9]{64}",os.environ["RELEASE_ID"]); assert re.fullmatch(r"[a-f0-9]{64}",os.environ["ARCHIVE_SHA256"])'
-          gh release download "$RELEASE_TAG" --pattern wrw-site.tar.gz --dir incoming
-          python scripts/wrw_pages_bundle.py verify incoming/wrw-site.tar.gz --output public-site --release-id "$RELEASE_ID" --sha256 "$ARCHIVE_SHA256"
+          if [ "$TRANSPORT" = layers ]; then
+            gh release download "$RELEASE_TAG" --pattern delivery.json --dir incoming
+            python scripts/wrw_layers.py incoming/delivery.json --output public-site --release-id "$RELEASE_ID" --sha256 "$ARCHIVE_SHA256" --repo "$GITHUB_REPOSITORY"
+          elif [ "$TRANSPORT" = archive ]; then
+            gh release download "$RELEASE_TAG" --pattern wrw-site.tar.gz --dir incoming
+            python scripts/wrw_pages_bundle.py verify incoming/wrw-site.tar.gz --output public-site --release-id "$RELEASE_ID" --sha256 "$ARCHIVE_SHA256"
+          else
+            echo 'Unknown transport' >&2
+            exit 1
+          fi
       - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+        id: pages
       - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4
         with:
           path: public-site
           retention-days: 1
           include-hidden-files: true
+      - name: Fence superseded layered publication
+        if: inputs.transport == 'layers'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA256: ${{ inputs.archive_sha256 }}
+          PUBLIC_URL: ${{ steps.pages.outputs.base_url }}
+        run: |
+          gh api "repos/$GITHUB_REPOSITORY/contents/publication-request.json?ref=main" --jq .content | base64 --decode > incoming/current-request.json
+          python -c 'import os,sys; sys.path.insert(0,"scripts"); from wrw_layers import check_dispatch; check_dispatch("incoming/delivery.json",os.environ["EXPECTED_SHA256"],"incoming/current-request.json",os.environ["PUBLIC_URL"])'
       - name: Deploy exact verified artifact
         id: deployment
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
       - name: Check deployed marker, articles, assets and 404
         env:
           PUBLIC_URL: ${{ steps.deployment.outputs.page_url }}
-        run: python scripts/wrw_verify_live.py --archive incoming/wrw-site.tar.gz --url "$PUBLIC_URL"
+          TRANSPORT: ${{ inputs.transport || 'archive' }}
+        run: |
+          if [ "$TRANSPORT" = layers ]; then
+            python scripts/wrw_verify_live.py --delivery incoming/delivery.json --url "$PUBLIC_URL"
+          else
+            python scripts/wrw_verify_live.py --archive incoming/wrw-site.tar.gz --url "$PUBLIC_URL"
+          fi
       - name: Remove transient Pages artifact after deployment
         if: always() && steps.deployment.outcome == 'success'
         env:
