@@ -1,6 +1,8 @@
 {
-  "archive_sha256": "ff4bb8c43c7266211ae196658e3a3512a63c574a3d829df8192bb8624d8f25ad",
-  "package_id": "f816c6ab324873c278950571c691644860ab966c9de66479012ce79662ece654",
-  "release_id": "8e716c8c4868d1cee168d493a415e1cd6ecc723c5c354c87892ee25316e2024d",
-  "schema": 1
+  "archive_sha256": "7e819da93bfceb3e6a5bbf1a34c81ec0d62c437d59135392ebeb0827093d293c",
+  "baseline": "f816c6ab324873c278950571c691644860ab966c9de66479012ce79662ece654",
+  "package_id": "4272a442fef00ba118aa14390aa9d058686f91bc635a80f30cacb78bf756ba23",
+  "release_id": "070f9af407ed2dcd301c6c04dfec7c0bfa9bd31771bb13cdc8df0f513660da7d",
+  "schema": 1,
+  "transport": "layers"
 }
