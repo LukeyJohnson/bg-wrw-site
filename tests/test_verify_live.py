@@ -100,6 +100,21 @@ class FeedLiveTests(unittest.TestCase):
             self.assertTrue(any('identities differ' in x for x in result['failures']))
 
 
+class ChangedLiveTests(unittest.TestCase):
+    def test_changed_and_sampled_paths_require_exact_adapted_bytes(self):
+        body=b'<link rel="canonical" href="https://wrw.blackgrid.com.au/new/"><article data-post-id="7">New</article>'
+        contents={'new/index.html':body,'assets/stable.css':b'body{}','media/new.webp':b'pixels'}
+        manifest={'release_id':'a'*64,'posts':[{'file':'new/index.html','path':'/new/','id':7}],
+            'files':[{'path':name,'bytes':len(value),'sha256':hashlib.sha256(value).hexdigest()} for name,value in contents.items()]}
+        def request(url):return contents[url.removeprefix('https://wrw.blackgrid.com.au/')],{}
+        with patch.object(live,'verify_live',return_value={'failures':[],'ok':True}),patch.object(live,'request',side_effect=request),patch.object(live.time,'sleep'):
+            result=live.verify_changed(manifest,'https://wrw.blackgrid.com.au/',['new/index.html','media/new.webp'])
+            self.assertTrue(result['ok']);self.assertEqual(result['unchanged_sample'],['assets/stable.css'])
+            contents['new/index.html']=body.replace(b'New',b'Stale')
+            bad=live.verify_changed(manifest,'https://wrw.blackgrid.com.au/',['new/index.html'])
+            self.assertFalse(bad['ok']);self.assertTrue(any('exact publication' in r for r in bad['failures']))
+
+
 class ConnectionTests(unittest.TestCase):
     def setUp(self):
         live.CONNECTIONS.values={}

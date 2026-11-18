@@ -12,6 +12,7 @@ from pathlib import Path
 import tarfile
 import time
 import xml.etree.ElementTree as ET
+from wrw_pages_bundle import safe_name
 from urllib.parse import urljoin, urlsplit, unquote
 from urllib.request import Request
 from urllib.error import HTTPError, URLError
@@ -224,8 +225,71 @@ def verify_live(manifest, base_url, full=False, workers=8, wait=120):
     return result
 
 
+def verify_changed(manifest, base_url, changed, removed=(), sample_size=12, workers=12):
+    """Exact bytes for every changed path plus reproducible unchanged samples."""
+    result = verify_live(manifest, base_url, full=False, workers=workers)
+    files = {r['path']: r for r in manifest['files']}
+    changed = set(changed)
+    if not changed <= files.keys(): raise ValueError('Unmanifested changed path')
+    for name in changed | set(removed): safe_name(name)
+    seed = manifest['release_id']
+    sample = set()
+    for candidates in ([p['file'] for p in manifest['posts']],
+                       [p for p in files if p.startswith(('assets/', 'media/', 'static/'))]):
+        ordered = sorted(set(candidates) - changed, key=lambda p: hashlib.sha256((seed + p).encode()).hexdigest())
+        sample.update(ordered[:sample_size])
+    posts = {p['file']: p for p in manifest['posts']}
+    def check(name):
+        reason = ''
+        for attempt in range(4):
+            try:
+                body, headers = request(urljoin(base_url.rstrip('/') + '/', name))
+                if len(body) != files[name]['bytes'] or hashlib.sha256(body).hexdigest() != files[name]['sha256']:
+                    raise ValueError('Published bytes differ from exact publication manifest')
+                if name in posts:
+                    info=PageInfo(); info.feed(body.decode('utf-8')); post=posts[name]
+                    if info.ids != [post['id']] or info.canonical != 'https://wrw.blackgrid.com.au'+post['path']:
+                        raise ValueError('Changed article identity/canonical differs')
+                if name.endswith('.xml'):
+                    ET.fromstring(body)
+                    kind=next((v.split(';')[0].strip().lower() for k,v in headers.items() if k.lower()=='content-type'),'')
+                    if kind not in ('application/rss+xml','application/atom+xml','application/xml','text/xml'):
+                        raise ValueError('Changed XML has wrong public content type')
+                return None
+            except Exception as exc: reason=str(exc)
+            if attempt < 3: time.sleep(2 ** attempt)
+        return name+': '+reason
+    failures=[]
+    selected=sorted(changed | sample)
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for count, future in enumerate(as_completed([pool.submit(check,name) for name in selected]),1):
+            error=future.result()
+            if error: failures.append(error)
+            if count % 250 == 0: print('Changed/sample paths checked',count,'/',len(selected),flush=True)
+    for name in removed:
+        try:
+            request(urljoin(base_url.rstrip('/')+'/',name));failures.append(name+': removed path still returns 200')
+        except HTTPError as exc:
+            if exc.code != 404:failures.append(name+': removed path returns '+str(exc.code))
+        except Exception as exc:failures.append(name+': '+str(exc))
+    result['failures'].extend(failures)
+    result.update(ok=not result['failures'],verification='changed-and-sampled',
+        changed_paths_checked=len(changed),unchanged_sample=sorted(sample),
+        exact_paths_checked=len(selected),removed_paths_checked=len(removed))
+    return result
+
+
 if __name__=='__main__':
-    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--archive',type=Path,required=True);p.add_argument('--url',required=True);p.add_argument('--full',action='store_true')
+    p=argparse.ArgumentParser(description=__doc__)
+    source=p.add_mutually_exclusive_group(required=True)
+    source.add_argument('--archive',type=Path);source.add_argument('--delivery',type=Path)
+    p.add_argument('--url',required=True);p.add_argument('--full',action='store_true')
     args=p.parse_args()
-    with tarfile.open(args.archive,'r:gz') as tar:manifest=json.loads(tar.extractfile('publication.json').read())
-    result=verify_live(manifest,args.url,args.full);print(json.dumps(result,indent=2));raise SystemExit(0 if result['ok'] else 1)
+    if args.delivery:
+        from wrw_layers import load_delivery
+        value=load_delivery(args.delivery);manifest=value['publication']
+        result=verify_live(manifest,args.url,True) if args.full else verify_changed(manifest,args.url,value['changed'],value['removed'])
+    else:
+        with tarfile.open(args.archive,'r:gz') as tar:manifest=json.loads(tar.extractfile('publication.json').read())
+        result=verify_live(manifest,args.url,args.full)
+    print(json.dumps(result,indent=2));raise SystemExit(0 if result['ok'] else 1)

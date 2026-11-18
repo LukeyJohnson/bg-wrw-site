@@ -87,7 +87,7 @@ def rebase(source, destination, prefix):
     return destination
 
 
-def create(site, output, release_id, prefix='', mode='preview'):
+def create(site, output, release_id, prefix='', mode='preview', pack=True):
     if not SHA.fullmatch(release_id): raise ValueError('Invalid release ID')
     if mode not in ('preview', 'production'): raise ValueError('Invalid mode')
     output.mkdir(parents=True, exist_ok=True)
@@ -116,14 +116,17 @@ def create(site, output, release_id, prefix='', mode='preview'):
     manifest = {**marker, 'files': files, 'posts': posts}
     manifest['package_id'] = sha(stable(manifest))
     (output / 'publication.json').write_bytes(stable(manifest) + b'\n')
+    result = {'release_id': release_id, 'package_id': manifest['package_id'],
+        'publication': str(output / 'publication.json'), 'site': str(public),
+        'site_bytes': sum(x['bytes'] for x in files), 'files': len(files), 'posts': len(posts), 'prefix': prefix}
+    if not pack: return result
     archive = output / 'wrw-site.tar.gz'
     with archive.open('wb') as raw, gzip.GzipFile(filename='', mode='wb', fileobj=raw, mtime=0) as gz, tarfile.open(mode='w', fileobj=gz) as tar:
         for file in [output / 'publication.json', *[public / item['path'] for item in files]]:
             name = file.relative_to(output).as_posix(); info = tarfile.TarInfo(name)
             info.size = file.stat().st_size; info.mode = 0o644; info.mtime = 0
             with file.open('rb') as stream: tar.addfile(info, stream)
-    return {'release_id': release_id, 'package_id': manifest['package_id'], 'sha256': file_sha(archive),
-        'archive': str(archive), 'bytes': archive.stat().st_size, 'site_bytes': sum(x['bytes'] for x in files), 'files': len(files), 'posts': len(posts), 'prefix': prefix}
+    return {**result, 'sha256': file_sha(archive), 'archive': str(archive), 'bytes': archive.stat().st_size}
 
 
 def verify(archive, output, release_id, expected_sha):
